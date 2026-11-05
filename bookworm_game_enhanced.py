@@ -224,11 +224,16 @@ class BookwormGame:
         tk.Label(shell, text="The library is alive. Make words, build combos, and keep the flames away.",
                  bg=BG, fg=MUTED, font=("Segoe UI", 11)).pack(pady=18)
         self.make_button(shell, "▶  PLAY", self.start_game, TEAL, 24).pack(pady=7)
+        self.make_button(shell, "⚔  WORM ARENA", self.open_worm_arena, RED, 24).pack(pady=7)
         self.make_button(shell, "HOW TO PLAY", self.show_instructions, GOLD, 24).pack(pady=7)
         self.make_button(shell, "SETTINGS  •  SOUND " + ("ON" if self.sound_on else "OFF"),
                          self.toggle_sound_menu, PURPLE, 24).pack(pady=7)
         tk.Label(shell, text="PYTHON EDITION  •  BUILD YOUR WORD LEGEND",
                  bg=BG, fg="#65728e", font=("Segoe UI", 9, "bold")).pack(side="bottom", pady=24)
+
+    def open_worm_arena(self):
+        """Launch the optional word-powered pixel combat mode."""
+        self.worm_arena = WormArena(self)
 
     def draw_tile_art(self, canvas, x, y, letter, size):
         canvas.create_rectangle(x+3, y+5, x+size+3, y+size+5, fill="#080d18", outline="")
@@ -698,6 +703,279 @@ class BookwormGame:
             except tk.TclError:
                 pass
         self.root.destroy()
+
+
+
+# ---------------------------------------------------------------------------
+# WORM ARENA: optional word-powered combat mode
+# ---------------------------------------------------------------------------
+
+class WormArena:
+    """A small Tkinter pixel-art battle mode that reuses the game's dictionary."""
+
+    ENEMIES = [
+        ("MOSS SLIME", "#67c96b", 42),
+        ("EMBER IMP", "#ff7048", 50),
+        ("SHADOW BAT", "#8b78d6", 46),
+        ("MUSHROOM BEAST", "#df647d", 58),
+    ]
+
+    def __init__(self, game):
+        self.game = game
+        self.window = tk.Toplevel(game.root)
+        self.window.title("Bookworm: Worm Arena")
+        self.window.geometry("940x690")
+        self.window.minsize(820, 620)
+        self.window.configure(bg=BG)
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+
+        self.player_hp = 100
+        self.level = 1
+        self.wins = 0
+        self.combo = 0
+        self.enemy_hp = 0
+        self.enemy_max_hp = 0
+        self.enemy_name = ""
+        self.enemy_color = "#67c96b"
+        self.enemy_turn = 0
+        self.busy = False
+        self.closed = False
+
+        top = tk.Frame(self.window, bg=BG)
+        top.pack(fill="x", padx=18, pady=(14, 8))
+        tk.Label(top, text="WORM ARENA", bg=BG, fg=GOLD,
+                 font=("Georgia", 25, "bold")).pack(side="left")
+        self.level_label = tk.Label(top, text="LEVEL 1", bg=BG, fg=TEAL,
+                                    font=("Segoe UI", 12, "bold"))
+        self.level_label.pack(side="right")
+
+        self.canvas = tk.Canvas(self.window, width=900, height=420,
+                                bg="#111a2b", highlightthickness=0)
+        self.canvas.pack(padx=18, pady=8, fill="both", expand=True)
+
+        status = tk.Frame(self.window, bg=PANEL, padx=14, pady=12)
+        status.pack(fill="x", padx=18, pady=8)
+        self.player_label = tk.Label(status, text="", bg=PANEL, fg=TEAL,
+                                     font=("Segoe UI", 10, "bold"))
+        self.player_label.pack(anchor="w")
+        self.enemy_label = tk.Label(status, text="", bg=PANEL, fg=RED,
+                                    font=("Segoe UI", 10, "bold"))
+        self.enemy_label.pack(anchor="w", pady=(4, 0))
+        self.message = tk.Label(status, text="Type a word to cast an attack!",
+                                bg=PANEL, fg=CREAM, font=("Segoe UI", 10))
+        self.message.pack(anchor="w", pady=(7, 0))
+
+        controls = tk.Frame(self.window, bg=BG)
+        controls.pack(fill="x", padx=18, pady=(4, 14))
+        self.word_entry = tk.Entry(controls, font=("Consolas", 17, "bold"),
+                                   bg="#263653", fg=CREAM, insertbackground=CREAM,
+                                   relief="flat", justify="center")
+        self.word_entry.pack(side="left", fill="x", expand=True, ipady=9)
+        self.word_entry.bind("<Return>", lambda event: self.attack())
+        self.attack_button = tk.Button(
+            controls, text="CAST WORD  [ENTER]", command=self.attack,
+            bg=TEAL, fg=BG, activebackground=GOLD, relief="flat",
+            font=("Segoe UI", 10, "bold"), padx=18, pady=12, cursor="hand2")
+        self.attack_button.pack(side="left", padx=(9, 0))
+        tk.Button(controls, text="BACK TO GAME", command=self.close,
+                  bg="#34425c", fg=CREAM, relief="flat",
+                  font=("Segoe UI", 9, "bold"), padx=12, pady=12).pack(side="left", padx=(8, 0))
+
+        self.spawn_enemy()
+        self.word_entry.focus_set()
+
+    def draw_pixel(self, x, y, color, scale=8):
+        self.canvas.create_rectangle(x, y, x + scale, y + scale,
+                                     fill=color, outline=color)
+
+    def draw_worm(self, x, y, hurt=False):
+        # Chunky segmented worm hero, with a distinct face and tiny feet.
+        shades = ["#42d6b5", "#31b99f", "#279b89", "#217c78"]
+        for i in range(5):
+            px = x - i * 24
+            py = y + (4 if i % 2 else 0)
+            self.canvas.create_rectangle(px, py, px + 23, py + 21,
+                                         fill=shades[i % len(shades)],
+                                         outline="#102b36", width=2)
+            self.canvas.create_rectangle(px + 4, py + 17, px + 9, py + 25,
+                                         fill="#163d46", outline="")
+            self.canvas.create_rectangle(px + 15, py + 17, px + 20, py + 25,
+                                         fill="#163d46", outline="")
+        face = "#ffb3a7" if hurt else "#eafff5"
+        self.canvas.create_rectangle(x + 11, y + 5, x + 16, y + 10,
+                                     fill=face, outline="")
+        self.canvas.create_rectangle(x + 20, y + 5, x + 25, y + 10,
+                                     fill=face, outline="")
+        self.canvas.create_rectangle(x + 17, y + 14, x + 24, y + 17,
+                                     fill="#123a3b", outline="")
+
+    def draw_enemy(self, x, y):
+        c = self.enemy_color
+        self.canvas.create_rectangle(x, y + 18, x + 100, y + 88,
+                                     fill=c, outline="#080d18", width=3)
+        self.canvas.create_rectangle(x + 12, y + 2, x + 88, y + 35,
+                                     fill=c, outline="#080d18", width=3)
+        self.canvas.create_rectangle(x + 19, y + 28, x + 32, y + 43,
+                                     fill="#fff4d6", outline="")
+        self.canvas.create_rectangle(x + 67, y + 28, x + 80, y + 43,
+                                     fill="#fff4d6", outline="")
+        self.canvas.create_rectangle(x + 24, y + 32, x + 29, y + 42,
+                                     fill="#101525", outline="")
+        self.canvas.create_rectangle(x + 72, y + 32, x + 77, y + 42,
+                                     fill="#101525", outline="")
+        self.canvas.create_rectangle(x + 39, y + 61, x + 62, y + 69,
+                                     fill="#401f35", outline="")
+        self.canvas.create_rectangle(x + 15, y + 83, x + 34, y + 99,
+                                     fill="#27304a", outline="")
+        self.canvas.create_rectangle(x + 67, y + 83, x + 86, y + 99,
+                                     fill="#27304a", outline="")
+
+    def draw_scene(self, effect=None):
+        self.canvas.delete("all")
+        self.canvas.create_rectangle(0, 0, 900, 420, fill="#111a2b", outline="")
+        # Distant library silhouettes and floor tiles.
+        for i in range(8):
+            bx = i * 120 + 10
+            self.canvas.create_rectangle(bx, 95, bx + 72, 230,
+                                         fill="#1a2942", outline="#263a58", width=2)
+            for j in range(3):
+                self.canvas.create_rectangle(bx + 8, 112 + j * 34,
+                                             bx + 64, 137 + j * 34,
+                                             fill="#263653", outline="")
+        self.canvas.create_rectangle(0, 300, 900, 420, fill="#202c3e", outline="")
+        for i in range(0, 900, 60):
+            self.canvas.create_line(i, 300, i - 25, 420, fill="#2b3b50")
+        self.draw_worm(245, 250, hurt=(effect == "hurt"))
+        self.draw_enemy(635, 198)
+        if effect == "attack":
+            for i in range(5):
+                self.canvas.create_rectangle(365 + i * 32, 240 - (i % 2) * 20,
+                                             380 + i * 32, 255 - (i % 2) * 20,
+                                             fill=GOLD, outline="")
+            self.canvas.create_text(475, 190, text="WORD BLAST!",
+                                    fill=GOLD, font=("Consolas", 18, "bold"))
+        elif effect == "hurt":
+            self.canvas.create_text(440, 180, text="OUCH!",
+                                    fill=RED, font=("Consolas", 20, "bold"))
+        self.canvas.create_text(450, 28, text="THE ENCHANTED LIBRARY • BATTLE FLOOR",
+                                fill="#7184a5", font=("Segoe UI", 10, "bold"))
+
+    def update_status(self):
+        self.level_label.config(text=f"LEVEL {self.level}  •  WINS {self.wins}")
+        self.player_label.config(
+            text=f"WORM HP  {self.player_hp}/100  " + "█" * (self.player_hp // 10)
+        )
+        self.enemy_label.config(
+            text=f"{self.enemy_name}  HP  {self.enemy_hp}/{self.enemy_max_hp}  " +
+                 "█" * max(0, self.enemy_hp // 5)
+        )
+
+    def spawn_enemy(self):
+        self.busy = False
+        self.enemy_name, self.enemy_color, base_hp = random.choice(self.ENEMIES)
+        self.enemy_max_hp = base_hp + (self.level - 1) * 9
+        self.enemy_hp = self.enemy_max_hp
+        self.enemy_turn = 0
+        self.draw_scene()
+        self.update_status()
+        self.message.config(text=f"A {self.enemy_name} appears! Spell a valid word (3+ letters).",
+                            fg=CREAM)
+        self.attack_button.config(state="normal")
+        self.word_entry.config(state="normal")
+        self.word_entry.delete(0, "end")
+        self.word_entry.focus_set()
+
+    def attack(self):
+        if self.busy or self.player_hp <= 0:
+            return
+        word = self.word_entry.get().strip().upper()
+        if len(word) < 3 or not word.isalpha() or word not in self.game.dictionary:
+            self.combo = 0
+            self.message.config(text="That word isn't in the spellbook. Try a valid 3+ letter word.",
+                                fg=RED)
+            self.word_entry.selection_range(0, "end")
+            return
+
+        self.combo += 1
+        base = len(word) * 4
+        bonus = max(0, len(word) - 5) * 3
+        critical = random.random() < min(.35, .08 + len(word) * .025)
+        damage = base + bonus + (12 if critical else 0) + min(12, self.combo * 2)
+        self.enemy_hp = max(0, self.enemy_hp - damage)
+        self.busy = True
+        self.draw_scene("attack")
+        self.update_status()
+        tag = " CRITICAL!" if critical else ""
+        self.message.config(text=f"{word}: {damage} damage! Combo x{self.combo}.{tag}",
+                            fg=GOLD if critical else TEAL)
+        self.word_entry.delete(0, "end")
+        self.attack_button.config(state="disabled")
+        self.word_entry.config(state="disabled")
+        self.window.after(650, self.after_player_attack)
+
+    def after_player_attack(self):
+        if self.closed:
+            return
+        if self.enemy_hp <= 0:
+            self.wins += 1
+            self.level += 1
+            self.player_hp = min(100, self.player_hp + 12)
+            self.update_status()
+            self.message.config(text="Enemy defeated! +12 HP. A stronger foe approaches...",
+                                fg=GOLD)
+            self.draw_scene()
+            self.window.after(1000, self.spawn_enemy)
+        else:
+            self.enemy_attack()
+
+    def enemy_attack(self):
+        if self.closed:
+            return
+        self.enemy_turn += 1
+        damage = random.randint(5, 9) + self.level // 2
+        self.player_hp = max(0, self.player_hp - damage)
+        self.combo = 0
+        self.draw_scene("hurt")
+        self.update_status()
+        self.message.config(text=f"{self.enemy_name} strikes back for {damage} damage!",
+                            fg=RED)
+        if self.player_hp <= 0:
+            self.message.config(text=f"Your worm needs a rest. You defeated {self.wins} enemies.",
+                                fg=RED)
+            self.attack_button.config(state="disabled")
+            self.word_entry.config(state="disabled")
+            self.window.after(900, self.show_game_over)
+        else:
+            self.window.after(500, self.enable_input)
+
+    def enable_input(self):
+        if self.closed:
+            return
+        self.busy = False
+        self.attack_button.config(state="normal")
+        self.word_entry.config(state="normal")
+        self.word_entry.focus_set()
+
+    def show_game_over(self):
+        if self.closed:
+            return
+        self.canvas.create_rectangle(170, 120, 730, 310, fill="#080d18",
+                                     outline=RED, width=3)
+        self.canvas.create_text(450, 170, text="BATTLE OVER", fill=RED,
+                                font=("Georgia", 28, "bold"))
+        self.canvas.create_text(450, 225, text=f"Enemies defeated: {self.wins}",
+                                fill=CREAM, font=("Segoe UI", 15, "bold"))
+        self.canvas.create_text(450, 260, text="Close this window to return to Bookworm.",
+                                fill=MUTED, font=("Segoe UI", 10))
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.window.destroy()
+        except tk.TclError:
+            pass
 
 
 def main():
